@@ -385,6 +385,7 @@ footer {
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.11.0/proj4.js"></script>
 
 <script>
 "use strict";
@@ -644,17 +645,85 @@ async function fetchJSON(url) {
   if (!response.ok) {
     throw new Error("HTTP "+response.status+" — "+url);
   }
-  return validateGeoJSON(await response.json());
+  const data = await response.json();
+  return validateGeoJSON(data);
 }
 
+/* Accept standard GeoJSON and convert ArcGIS/Esri JSON polygon exports. */
 function validateGeoJSON(data) {
-  if (!data || !["FeatureCollection","Feature"].includes(data.type)) {
-    throw new Error("Invalid GeoJSON Feature or FeatureCollection.");
-  }
-  if (data.type === "Feature") {
+  if (data && data.type === "Feature") {
     return {type:"FeatureCollection",features:[data]};
   }
-  return data;
+  if (data && data.type === "FeatureCollection" && Array.isArray(data.features)) {
+    return data;
+  }
+
+  if (data && Array.isArray(data.features) && data.geometryType) {
+    return convertEsriJSON(data);
+  }
+  if (data && data.geometry && data.geometry.rings) {
+    return convertEsriJSON({geometryType:"esriGeometryPolygon",features:[data],spatialReference:data.spatialReference});
+  }
+  throw new Error("Unsupported spatial JSON. Expected GeoJSON FeatureCollection or Esri JSON with geometryType and features.");
+}
+
+function convertEsriJSON(data) {
+  const wkid = Number(
+    data.spatialReference?.latestWkid ||
+    data.spatialReference?.wkid ||
+    data.features?.find(f=>f.geometry?.spatialReference)?.geometry?.spatialReference?.latestWkid ||
+    data.features?.find(f=>f.geometry?.spatialReference)?.geometry?.spatialReference?.wkid ||
+    4326
+  );
+
+  if (typeof proj4 !== "undefined") {
+    proj4.defs("EPSG:32628","+proj=utm +zone=28 +datum=WGS84 +units=m +no_defs +type=crs");
+    proj4.defs("EPSG:3857","+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +k=1 +units=m +nadgrids=@null +no_defs +type=crs");
+  }
+
+  const transformPosition = position => {
+    if (!Array.isArray(position) || position.length < 2) return position;
+    const x=Number(position[0]), y=Number(position[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return position;
+    if (wkid===4326 || wkid===4269 || (!wkid && Math.abs(x)<=180 && Math.abs(y)<=90)) return [x,y];
+    if (typeof proj4 === "undefined") {
+      throw new Error("This Esri JSON uses projected coordinates (WKID "+wkid+"), but the coordinate transformation library did not load.");
+    }
+    const source = "EPSG:"+wkid;
+    try {
+      const out=proj4(source,"EPSG:4326",[x,y]);
+      return [out[0],out[1]];
+    } catch (error) {
+      throw new Error("Cannot reproject Esri coordinates from WKID "+wkid+": "+error.message);
+    }
+  };
+
+  const features = data.features.map((item,index) => {
+    const attrs = item.attributes || item.properties || {};
+    const geom = item.geometry || item;
+    let geometry = null;
+
+    if (geom.rings && geom.rings.length) {
+      const rings = geom.rings.map(ring=>ring.map(transformPosition));
+      // Esri exports commonly store one polygon per feature. Preserve ring order
+      // so interior rings remain available as holes in GeoJSON.
+      geometry = {type:"Polygon",coordinates:rings};
+    } else if (geom.paths && geom.paths.length) {
+      const paths = geom.paths.map(path=>path.map(transformPosition));
+      geometry = paths.length===1
+        ? {type:"LineString",coordinates:paths[0]}
+        : {type:"MultiLineString",coordinates:paths};
+    } else if (geom.x!==undefined && geom.y!==undefined) {
+      geometry = {type:"Point",coordinates:transformPosition([geom.x,geom.y])};
+    }
+
+    if (!geometry) {
+      throw new Error("Esri JSON feature "+index+" has no supported rings, paths, or point geometry.");
+    }
+    return {type:"Feature",id:item.id??attrs.OBJECTID??attrs.FID??index,properties:attrs,geometry};
+  });
+
+  return {type:"FeatureCollection",features};
 }
 
 function detectYearField(rows) {
