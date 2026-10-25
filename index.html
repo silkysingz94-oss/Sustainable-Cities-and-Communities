@@ -744,7 +744,18 @@ function yearFromRow(row, yearField) {
 
 function splitCombinedCensus(rows) {
   const yearField = detectYearField(rows);
-  if (!yearField) throw new Error("Combined census CSV has no recognizable year field (e.g. Year or CensusYear).");
+  if (!yearField) {
+    // Do not duplicate an unlabelled dataset into both census years.
+    // The repository's current Census_2013_2023.csv is an EA attribute table,
+    // not a year-labelled census observations table.
+    return {
+      rows2013: [],
+      rows2023: [],
+      yearField: null,
+      warning: "Census_2013_2023.csv has no recognizable year column. It appears to be a shared EA/spatial attribute table, so records were not falsely assigned to 2013 or 2023. Add a Year/CensusYear column or provide separate year-specific census CSVs."
+    };
+  }
+
   const rows2013 = [];
   const rows2023 = [];
   rows.forEach(row => {
@@ -753,9 +764,14 @@ function splitCombinedCensus(rows) {
     else if (year === 2023) rows2023.push(row);
   });
   if (!rows2013.length && !rows2023.length) {
-    throw new Error("Year field '"+yearField+"' was found, but no rows were identified as 2013 or 2023.");
+    return {
+      rows2013: [],
+      rows2023: [],
+      yearField,
+      warning: "Year field '"+yearField+"' exists, but no rows were identified as 2013 or 2023. Check its values."
+    };
   }
-  return {rows2013, rows2023, yearField};
+  return {rows2013, rows2023, yearField, warning:null};
 }
 
 async function loadRemoteData() {
@@ -783,6 +799,7 @@ async function loadRemoteData() {
       state.raw2013 = split.rows2013;
       state.raw2023 = split.rows2023;
       state.yearField = split.yearField;
+      if (split.warning) state.loadErrors.push("Census data warning: "+split.warning);
     } catch (error) {
       state.raw2013 = [];
       state.raw2023 = [];
