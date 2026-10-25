@@ -831,6 +831,7 @@ function allCensusSources() {
 function uniqueAdminValues(level, region="", district="") {
   const values = new Set();
 
+  // First use year-specific census tables when available.
   for (const source of allCensusSources()) {
     const {rows, fields} = source;
     if (!fields || !fields[level]) continue;
@@ -842,6 +843,23 @@ function uniqueAdminValues(level, region="", district="") {
       const value = adminValue(row,fields,level);
       if (value) values.add(value);
     }
+  }
+
+  // The repository's combined CSV currently has no Year field, so the
+  // census arrays can be empty. Fall back to the EA GeoJSON attributes,
+  // which contain lganame, distname and wardname in the source dataset.
+  const features = state.ea?.features || [];
+  for (const feature of features) {
+    const props = feature?.properties || {};
+    const regionField = detectGeoProperty(props, "region");
+    const districtField = detectGeoProperty(props, "district");
+    const wardField = detectGeoProperty(props, "ward");
+    if (region && (!regionField || String(props[regionField] ?? "").trim() !== region)) continue;
+    if (district && (!districtField || String(props[districtField] ?? "").trim() !== district)) continue;
+    const field = level === "region" ? regionField :
+      level === "district" ? districtField : wardField;
+    const value = field ? String(props[field] ?? "").trim() : "";
+    if (value) values.add(value);
   }
 
   return [...values].sort((a,b) =>
@@ -1076,9 +1094,9 @@ function refreshMap() {
     census2023:makePointLayer(
       state.filtered2023,state.fields.census2023,2023
     ),
-    ea:makeGeoLayer(state.ea,"census spatial features"),
-    built13:makeGeoLayer(state.built13,"built-up 2013"),
-    built23:makeGeoLayer(state.built23,"built-up 2023")
+    ea:makeGeoLayer(state.ea,"ea"),
+    built13:makeGeoLayer(state.built13,"built13"),
+    built23:makeGeoLayer(state.built23,"built23")
   };
 
   toggleLayer("census2013",$("show2013").checked);
