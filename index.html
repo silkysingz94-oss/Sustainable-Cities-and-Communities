@@ -244,7 +244,7 @@ footer {
       <div class="checks">
         <label><input type="checkbox" id="show2013" checked> Census 2013</label>
         <label><input type="checkbox" id="show2023" checked> Census 2023</label>
-        <label><input type="checkbox" id="showEA" checked> EA boundaries</label>
+        <label><input type="checkbox" id="showEA" checked> Census spatial features</label>
         <label><input type="checkbox" id="showBuilt13" checked> Built-up 2013</label>
         <label><input type="checkbox" id="showBuilt23" checked> Built-up 2023</label>
       </div>
@@ -260,13 +260,10 @@ footer {
 
     <div class="section">
       <h3>Manual data uploads</h3>
-      <label for="upload2013">Census 2013 CSV</label>
-      <input type="file" id="upload2013" accept=".csv,.txt">
+      <label for="uploadCombined">Combined census CSV (2013 + 2023)</label>
+      <input type="file" id="uploadCombined" accept=".csv,.txt">
 
-      <label for="upload2023">Census 2023 CSV</label>
-      <input type="file" id="upload2023" accept=".csv,.txt">
-
-      <label for="uploadEA">EA boundaries GeoJSON</label>
+      <label for="uploadEA">Census spatial features GeoJSON</label>
       <input type="file" id="uploadEA" accept=".json,.geojson">
 
       <label for="uploadBuilt13">Built-up 2013 GeoJSON</label>
@@ -398,12 +395,10 @@ footer {
 ========================================================= */
 
 const DATA_URLS = {
-  census2013:
-    "https://raw.githubusercontent.com/silkysingz94-oss/Sustainable-Cities-and-Communities/main/Census_2013.csv",
-  census2023:
-    "https://raw.githubusercontent.com/silkysingz94-oss/Sustainable-Cities-and-Communities/main/Census_2023.csv",
-  censusEAs:
-    "https://raw.githubusercontent.com/silkysingz94-oss/Sustainable-Cities-and-Communities/main/Census_EAs_Geo.json",
+  censusCombined:
+    "https://raw.githubusercontent.com/silkysingz94-oss/Sustainable-Cities-and-Communities/main/Census_2013_2023.csv",
+  censusSpatial:
+    "https://raw.githubusercontent.com/silkysingz94-oss/Sustainable-Cities-and-Communities/main/Census2013_2023.geojson",
   builtUp2013:
     "https://raw.githubusercontent.com/silkysingz94-oss/Sustainable-Cities-and-Communities/main/BuiltUp_Area2013.json",
   builtUp2023:
@@ -508,6 +503,10 @@ const FIELD_ALIASES = {
   ],
   code: [
     "code","eaname","feacode","ea_code","eacode","objectid"
+  ],
+  year: [
+    "year","censusyear","census_year","surveyyear","survey_year",
+    "enumerationyear","round","censusround","census"
   ]
 };
 
@@ -658,37 +657,73 @@ function validateGeoJSON(data) {
   return data;
 }
 
+function detectYearField(rows) {
+  return detectField(rows.length ? Object.keys(rows[0]) : [], "year");
+}
+
+function yearFromRow(row, yearField) {
+  const value = yearField ? String(row[yearField] ?? "").trim() : "";
+  const match = value.match(/(?:19|20)\d{2}/);
+  if (match && (match[0] === "2013" || match[0] === "2023")) return Number(match[0]);
+  for (const candidate of Object.values(row || {})) {
+    const text = String(candidate ?? "");
+    if (/\b2013\b/.test(text)) return 2013;
+    if (/\b2023\b/.test(text)) return 2023;
+  }
+  return null;
+}
+
+function splitCombinedCensus(rows) {
+  const yearField = detectYearField(rows);
+  if (!yearField) throw new Error("Combined census CSV has no recognizable year field (e.g. Year or CensusYear).");
+  const rows2013 = [];
+  const rows2023 = [];
+  rows.forEach(row => {
+    const year = yearFromRow(row, yearField);
+    if (year === 2013) rows2013.push(row);
+    else if (year === 2023) rows2023.push(row);
+  });
+  if (!rows2013.length && !rows2023.length) {
+    throw new Error("Year field '"+yearField+"' was found, but no rows were identified as 2013 or 2023.");
+  }
+  return {rows2013, rows2023, yearField};
+}
+
 async function loadRemoteData() {
-  setStatus("Loading GitHub datasets…");
+  setStatus("Automatically fetching repository datasets…");
   state.loadErrors = [];
 
   const tasks = [
-    ["raw2013",()=>fetchCSV(DATA_URLS.census2013),"Census 2013 CSV"],
-    ["raw2023",()=>fetchCSV(DATA_URLS.census2023),"Census 2023 CSV"],
-    ["ea",()=>fetchJSON(DATA_URLS.censusEAs),"EA boundaries"],
+    ["combinedCSV",()=>fetchCSV(DATA_URLS.censusCombined),"Combined census CSV"],
+    ["ea",()=>fetchJSON(DATA_URLS.censusSpatial),"Census spatial GeoJSON"],
     ["built13",()=>fetchJSON(DATA_URLS.builtUp2013),"Built-up 2013"],
     ["built23",()=>fetchJSON(DATA_URLS.builtUp2023),"Built-up 2023"]
   ];
 
   await Promise.all(tasks.map(async ([key, loader, label]) => {
-    try {
-      state[key] = await loader();
-    } catch (error) {
+    try { state[key] = await loader(); }
+    catch (error) {
       state.loadErrors.push(label+": "+error.message);
       console.error(label, error);
     }
   }));
 
-  initializeDashboard();
-
-  if (state.loadErrors.length) {
-    setStatus(
-      "Some files failed to load. Check diagnostics and repository filenames.",
-      "error"
-    );
-  } else {
-    setStatus("All GitHub datasets loaded.","ok");
+  if (state.combinedCSV) {
+    try {
+      const split = splitCombinedCensus(state.combinedCSV);
+      state.raw2013 = split.rows2013;
+      state.raw2023 = split.rows2023;
+      state.yearField = split.yearField;
+    } catch (error) {
+      state.raw2013 = [];
+      state.raw2023 = [];
+      state.loadErrors.push("Census year split: "+error.message);
+    }
   }
+
+  initializeDashboard();
+  if (state.loadErrors.length) setStatus("Some files failed to load or validate. See field diagnostics.", "error");
+  else setStatus("All four repository datasets loaded automatically.", "ok");
 }
 
 /* ---------------- CASCADING ADMIN FILTERS ---------------- */
@@ -877,10 +912,48 @@ function geoStyle(kind) {
   return {color:"#7e22ce",weight:1,fillColor:"#c084fc",fillOpacity:.28};
 }
 
+function detectGeoProperty(properties, level) {
+  return detectField(Object.keys(properties || {}), level);
+}
+
+function currentAdminFilters() {
+  return {region:$("regionFilter").value,district:$("districtFilter").value,ward:$("wardFilter").value};
+}
+
+function geoFeatureMatches(feature) {
+  const props = feature?.properties || {};
+  const filters = currentAdminFilters();
+  for (const level of ["region","district","ward"]) {
+    const wanted = filters[level];
+    if (!wanted) continue;
+    const key = detectGeoProperty(props,level);
+    if (!key || String(props[key] ?? "").trim().toLocaleLowerCase() !== wanted.toLocaleLowerCase()) return false;
+  }
+  return true;
+}
+
+function filterGeoJSON(data, layerName, addWarnings=true) {
+  if (!data?.features) return null;
+  const filters = currentAdminFilters();
+  const active = ["region","district","ward"].some(level=>filters[level]);
+  if (!active) return data;
+  const sample = data.features.find(f=>f?.properties)?.properties || {};
+  const missing = ["region","district","ward"].filter(level=>filters[level] && !detectGeoProperty(sample,level));
+  if (missing.length) {
+    const warning = layerName+": hidden because selected filter(s) "+missing.join(", ")+
+      " cannot be matched to properties in this GeoJSON. Add matching administrative fields to the file.";
+    if (addWarnings && !state.loadErrors.includes(warning)) state.loadErrors.push(warning);
+    return {type:"FeatureCollection",features:[]};
+  }
+  return {type:"FeatureCollection",features:data.features.filter(geoFeatureMatches)};
+}
+
 function makeGeoLayer(data, kind) {
   if (!data) return null;
+  const filteredData = filterGeoJSON(data, kind, true);
+  if (!filteredData) return null;
 
-  return L.geoJSON(data,{
+  return L.geoJSON(filteredData,{
     style:()=>geoStyle(kind),
     onEachFeature:(feature,layer)=>{
       const properties = feature.properties || {};
@@ -917,9 +990,9 @@ function refreshMap() {
     census2023:makePointLayer(
       state.filtered2023,state.fields.census2023,2023
     ),
-    ea:makeGeoLayer(state.ea,"ea"),
-    built13:makeGeoLayer(state.built13,"built13"),
-    built23:makeGeoLayer(state.built23,"built23")
+    ea:makeGeoLayer(state.ea,"census spatial features"),
+    built13:makeGeoLayer(state.built13,"built-up 2013"),
+    built23:makeGeoLayer(state.built23,"built-up 2023")
   };
 
   toggleLayer("census2013",$("show2013").checked);
@@ -1016,8 +1089,11 @@ function sumField(rows,field) {
 function areaSum(geojson) {
   if (!geojson?.features?.length) return null;
 
+  const filtered = filterGeoJSON(geojson, geojson===state.built13 ? "built-up 2013" : "built-up 2023", true);
+  if (!filtered?.features?.length) return null;
+
   const propertyNames = Object.keys(
-    geojson.features.find(f=>f.properties)?.properties || {}
+    filtered.features.find(f=>f.properties)?.properties || {}
   );
 
   const accepted = [
@@ -1041,7 +1117,7 @@ function areaSum(geojson) {
     key.includes("m2") ? "m²" : "ha";
 
   let total = 0;
-  geojson.features.forEach(feature=>{
+  filtered.features.forEach(feature=>{
     total += toNumber(feature.properties?.[field]) || 0;
   });
 
@@ -1184,11 +1260,13 @@ function renderDiagnostics() {
   });
 
   output.push(
-    "<b>GeoJSON feature counts</b><br>"+
-    "EA boundaries: "+formatNumber(state.ea?.features?.length||0)+"<br>"+
+    "<b>Repository GeoJSON feature counts</b><br>"+
+    "Census spatial features: "+formatNumber(state.ea?.features?.length||0)+"<br>"+
     "Built-up 2013: "+formatNumber(state.built13?.features?.length||0)+"<br>"+
     "Built-up 2023: "+formatNumber(state.built23?.features?.length||0)
   );
+  if (state.yearField) output.push("Combined CSV year field: <b>"+escapeHTML(state.yearField)+"</b>");
+  if (state.loadErrors.length) output.push("<b style='color:#b91c1c'>Data diagnostics</b><br>"+state.loadErrors.map(escapeHTML).join("<br>"));
 
   if (state.loadErrors.length) {
     output.push("<b style='color:#b91c1c'>Load errors</b><br>"+
@@ -1304,8 +1382,21 @@ async function handleUpload(inputId,key,type) {
   });
 }
 
-handleUpload("upload2013","raw2013","csv");
-handleUpload("upload2023","raw2023","csv");
+$("uploadCombined").addEventListener("change", async event => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  try {
+    setStatus("Reading "+file.name+"…");
+    const rows = await parseCSV(await file.text());
+    const split = splitCombinedCensus(rows);
+    state.combinedCSV = rows;
+    state.raw2013 = split.rows2013;
+    state.raw2023 = split.rows2023;
+    state.yearField = split.yearField;
+    initializeDashboard();
+    setStatus("Loaded combined census CSV locally.", "ok");
+  } catch (error) { setStatus("Could not split combined CSV: "+error.message, "error"); }
+});
 handleUpload("uploadEA","ea","geo");
 handleUpload("uploadBuilt13","built13","geo");
 handleUpload("uploadBuilt23","built23","geo");
