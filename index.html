@@ -244,9 +244,9 @@ footer {
       <div class="checks">
         <label><input type="checkbox" id="show2013" checked> Census 2013</label>
         <label><input type="checkbox" id="show2023" checked> Census 2023</label>
-        <label><input type="checkbox" id="showEA" checked> Census spatial features</label>
-        <label><input type="checkbox" id="showBuilt13" checked> Built-up 2013</label>
-        <label><input type="checkbox" id="showBuilt23" checked> Built-up 2023</label>
+        <label><input type="checkbox" id="showEA"> Census spatial features</label>
+        <label><input type="checkbox" id="showBuilt13"> Built-up 2013</label>
+        <label><input type="checkbox" id="showBuilt23"> Built-up 2023</label>
       </div>
       <label for="mapTheme">Basemap</label>
       <select id="mapTheme">
@@ -1087,6 +1087,8 @@ function refreshMap() {
     if (layer && map.hasLayer(layer)) map.removeLayer(layer);
   });
 
+  // Keep the map responsive: detailed national EA/build-up polygons are
+  // constructed only when the user switches those layers on.
   state.layers = {
     census2013:makePointLayer(
       state.filtered2013,state.fields.census2013,2013
@@ -1094,9 +1096,9 @@ function refreshMap() {
     census2023:makePointLayer(
       state.filtered2023,state.fields.census2023,2023
     ),
-    ea:makeGeoLayer(state.ea,"ea"),
-    built13:makeGeoLayer(state.built13,"built13"),
-    built23:makeGeoLayer(state.built23,"built23")
+    ea:$("showEA").checked ? makeGeoLayer(state.ea,"ea") : null,
+    built13:$("showBuilt13").checked ? makeGeoLayer(state.built13,"built13") : null,
+    built23:$("showBuilt23").checked ? makeGeoLayer(state.built23,"built23") : null
   };
 
   toggleLayer("census2013",$("show2013").checked);
@@ -1117,7 +1119,7 @@ function refreshMap() {
   $("mapCount").textContent = formatNumber(pointCount+polygonCount)+" features";
   $("mapMessage").textContent =
     formatNumber(pointCount)+" valid census points · "+
-    formatNumber(polygonCount)+" polygon features";
+    formatNumber(polygonCount)+" polygon features · enable polygon layers individually to keep the map responsive";
 
   updateLegend();
 }
@@ -1547,7 +1549,25 @@ $("wardFilter").addEventListener("change",applyFilters);
   ["showBuilt23","built23"]
 ].forEach(([checkboxId,layerId])=>{
   $(checkboxId).addEventListener("change",()=>{
-    toggleLayer(layerId,$(checkboxId).checked);
+    // Rebuild only the layer toggled by the user; this keeps the admin
+    // selectors responsive while large polygon files remain off by default.
+    if (["ea","built13","built23"].includes(layerId)) {
+      if ($(checkboxId).checked) {
+        const data = layerId==="ea" ? state.ea : layerId==="built13" ? state.built13 : state.built23;
+        state.layers[layerId] = makeGeoLayer(data,layerId);
+        toggleLayer(layerId,true);
+      } else {
+        toggleLayer(layerId,false);
+        state.layers[layerId] = null;
+      }
+      const pointCount =
+        state.filtered2013.filter(row=>getCoordinates(row,state.fields.census2013)).length +
+        state.filtered2023.filter(row=>getCoordinates(row,state.fields.census2023)).length;
+      const polygonCount = Object.values(state.layers).reduce((sum,layer)=>sum+(layer?.getLayers?.().length||0),0);
+      $("mapCount").textContent = formatNumber(pointCount+polygonCount)+" features";
+    } else {
+      toggleLayer(layerId,$(checkboxId).checked);
+    }
     updateLegend();
   });
 });
