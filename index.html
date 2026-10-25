@@ -413,6 +413,10 @@ const state = {
   raw2023: [],
   filtered2013: [],
   filtered2023: [],
+  // Administrative lookup table is independent of census-year splitting.
+  // The repository's combined CSV has admin fields but no year column.
+  adminRows: [],
+  adminFields: {},
   ea: null,
   built13: null,
   built23: null,
@@ -794,6 +798,10 @@ async function loadRemoteData() {
   }));
 
   if (state.combinedCSV) {
+    // Always retain the combined table for Region/LGA, District and Ward
+    // selectors, even when it cannot be assigned to a census year.
+    state.adminRows = state.combinedCSV;
+    state.adminFields = detectFields(state.adminRows);
     try {
       const split = splitCombinedCensus(state.combinedCSV);
       state.raw2013 = split.rows2013;
@@ -831,31 +839,32 @@ function allCensusSources() {
 function uniqueAdminValues(level, region="", district="") {
   const values = new Set();
 
-  // First use year-specific census tables when available.
-  for (const source of allCensusSources()) {
+  // Year-specific census tables, when supplied.
+  const sources = allCensusSources().concat([
+    {rows:state.adminRows || [], fields:state.adminFields || {}}
+  ]);
+
+  for (const source of sources) {
     const {rows, fields} = source;
-    if (!fields || !fields[level]) continue;
+    if (!Array.isArray(rows) || !fields || !fields[level]) continue;
 
     for (const row of rows) {
-      if (region && adminValue(row,fields,"region") !== region) continue;
-      if (district && adminValue(row,fields,"district") !== district) continue;
+      if (region && adminValue(row,fields,"region").toLocaleLowerCase() !== region.toLocaleLowerCase()) continue;
+      if (district && adminValue(row,fields,"district").toLocaleLowerCase() !== district.toLocaleLowerCase()) continue;
 
       const value = adminValue(row,fields,level);
       if (value) values.add(value);
     }
   }
 
-  // The repository's combined CSV currently has no Year field, so the
-  // census arrays can be empty. Fall back to the EA GeoJSON attributes,
-  // which contain lganame, distname and wardname in the source dataset.
-  const features = state.ea?.features || [];
-  for (const feature of features) {
+  // Also use GeoJSON attributes if the spatial file loaded.
+  for (const feature of (state.ea?.features || [])) {
     const props = feature?.properties || {};
     const regionField = detectGeoProperty(props, "region");
     const districtField = detectGeoProperty(props, "district");
     const wardField = detectGeoProperty(props, "ward");
-    if (region && (!regionField || String(props[regionField] ?? "").trim() !== region)) continue;
-    if (district && (!districtField || String(props[districtField] ?? "").trim() !== district)) continue;
+    if (region && (!regionField || String(props[regionField] ?? "").trim().toLocaleLowerCase() !== region.toLocaleLowerCase())) continue;
+    if (district && (!districtField || String(props[districtField] ?? "").trim().toLocaleLowerCase() !== district.toLocaleLowerCase())) continue;
     const field = level === "region" ? regionField :
       level === "district" ? districtField : wardField;
     const value = field ? String(props[field] ?? "").trim() : "";
@@ -1366,6 +1375,11 @@ function renderDiagnostics() {
   });
 
   output.push(
+    "<b>Administrative selector source</b><br>"+
+    "Lookup-table rows: "+formatNumber(state.adminRows?.length||0)+"<br>"+
+    "Region/LGA field: "+escapeHTML(state.adminFields?.region||"not detected")+"<br>"+
+    "District field: "+escapeHTML(state.adminFields?.district||"not detected")+"<br>"+
+    "Ward field: "+escapeHTML(state.adminFields?.ward||"not detected")+"<br>"+
     "<b>Repository GeoJSON feature counts</b><br>"+
     "Census spatial features: "+formatNumber(state.ea?.features?.length||0)+"<br>"+
     "Built-up 2013: "+formatNumber(state.built13?.features?.length||0)+"<br>"+
